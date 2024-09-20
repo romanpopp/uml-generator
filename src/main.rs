@@ -10,10 +10,8 @@ fn main() {
     if args.len() > 1 {
         let current_dir = &args[1];
         let umlpath = Path::new(current_dir).join("uml.mmd");
-        let mut file = File::create(&umlpath).expect("uml.mmd could not be created");
-        file.write_all(b"classDiagram\n\tdirection UD")
-            .expect("error writing to file");
-
+        let mut file_contents = String::new();
+        file_contents.push_str("classDiagram\n\tdirection UD");
         for entry in WalkDir::new(current_dir) {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -21,16 +19,21 @@ fn main() {
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("cs") {
                 println!("parsing file: {}", path.display());
                 let contents = fs::read_to_string(path).expect("file read error");
-                parse_contents(contents, &mut file);
+                file_contents.push_str(parse_contents(contents).as_str());
             }
         }
+        let modified_contents = file_contents.replace("~~get~~, ~~set~~", "~~get + set~~");
+        let mut file = File::create(&umlpath).expect("error creating uml.mmd file");
+        file.write_all(modified_contents.as_bytes())
+            .expect("error writing contents to uml.mmd file");
     } else {
         println!("no directory to search");
     }
     println!("uml.mmd created");
 }
 
-fn parse_contents(contents: String, file: &mut File) {
+fn parse_contents(contents: String) -> String {
+    let mut file_contents = String::new();
     let mut need_closing_brace = false;
     for line in contents
         .lines()
@@ -47,7 +50,7 @@ fn parse_contents(contents: String, file: &mut File) {
             && !line.contains(";")
         {
             need_closing_brace = true;
-            parse_class(line, file);
+            file_contents.push_str(parse_class(line).as_str());
         }
         // Method definition
         else if (line.starts_with("public")
@@ -58,7 +61,7 @@ fn parse_contents(contents: String, file: &mut File) {
             && !line.contains(" new ")
             && !line.contains("=")
         {
-            parse_method(line, file);
+            file_contents.push_str(parse_method(line).as_str());
         }
         // Enums
         else if (line.starts_with("public")
@@ -66,28 +69,30 @@ fn parse_contents(contents: String, file: &mut File) {
             || line.starts_with("protected"))
             && line.contains(" enum ")
         {
-            parse_enum(line, &contents, file);
+            file_contents.push_str(parse_enum(line, &contents).as_str());
         }
         // Property / global var definition
         else if line.starts_with("public")
             || line.starts_with("private")
             || line.starts_with("protected")
         {
-            parse_attribute(line, file);
+            file_contents.push_str(parse_attribute(line).as_str());
         }
         // Getters and setters on different lines
         else if line.starts_with("get") {
-            write!(file, " [get]").expect("error writing to file");
+            file_contents.push_str(", ~~get~~")
         } else if line.starts_with("set") {
-            write!(file, " [set]").expect("error writing to file");
+            file_contents.push_str(", ~~set~~")
         }
     }
     if need_closing_brace {
-        write!(file, "\n\t}}").expect("error writing to file");
+        file_contents.push_str("\n\t}");
     }
+    file_contents
 }
 
-fn parse_class(line: String, file: &mut File) {
+fn parse_class(line: String) -> String {
+    let mut class_contents = String::new();
     let re = Regex::new(r"~[^~]*~").unwrap();
     let parts: Vec<String> = line
         .replace(":", " : ") // Add spaces around colon, just in case
@@ -104,21 +109,23 @@ fn parse_class(line: String, file: &mut File) {
         class_name = definition.last().unwrap();
         for item in base_types {
             if is_interface(item) {
-                write!(file, "\n\t{} ..* {}", class_name, item).expect("error writing to file");
+                class_contents.push_str(&format!("\n\t{} ..* {}", class_name, item));
             } else {
-                write!(file, "\n\t{} --* {}", class_name, item).expect("error writing to file");
+                class_contents.push_str(&format!("\n\t{} --* {}", class_name, item))
             }
         }
     } else {
         class_name = parts.last().unwrap();
     }
-    write!(file, "\n\tclass {} {{", class_name).expect("error writing to file");
+    class_contents.push_str(&format!("\n\tclass {} {{", class_name));
     if is_interface(class_name) {
-        write!(file, "\n\t\t<<interface>>").expect("error writing to file");
+        class_contents.push_str("\n\t\t<<interface>>");
     }
+    class_contents
 }
 
-fn parse_method(line: String, file: &mut File) {
+fn parse_method(line: String) -> String {
+    let mut method_contents = String::new();
     let re = Regex::new(r"(?P<visibility>public|private|protected)?\s*(?P<modifiers>static|virtual|abstract|override|async|sealed|extern|unsafe|partial|readonly)?\s*(?P<return_type>[^\s]+)?\s+(?P<name>[^\s]+)\((?P<params>[^\)]*)\)").unwrap();
     if let Some(caps) = re.captures(line.as_str()) {
         let visibility = caps.name("visibility").map_or("", |m| m.as_str());
@@ -128,9 +135,9 @@ fn parse_method(line: String, file: &mut File) {
         let name = caps.name("name").map_or("", |m| m.as_str());
         let params = caps.name("params").map_or("", |m| m.as_str());
         match visibility {
-            "private" => write!(file, "\t\t- ").expect("error writing to file"),
-            "protected" => write!(file, "\t\t# ").expect("error writing to file"),
-            _ => write!(file, "\t\t+ ").expect("error writing to file"),
+            "private" => method_contents.push_str("\t\t- "),
+            "protected" => method_contents.push_str("\t\t# "),
+            _ => method_contents.push_str("\t\t+ "),
         }
         let parts: Vec<&str> = params.split(',').map(|s| s.trim()).collect();
         let formatted_params: Vec<String> = parts
@@ -145,26 +152,26 @@ fn parse_method(line: String, file: &mut File) {
                 format!("{}: {}", param_name, param_type)
             })
             .collect();
-        write!(
-            file,
+        method_contents.push_str(&format!(
             "{}({}) {}",
             name,
             formatted_params.join(", "),
             return_type
-        )
-        .expect("error writing to file");
+        ));
     }
+    method_contents
 }
 
-fn parse_enum(line: String, contents: &String, file: &mut File) {
+fn parse_enum(line: String, contents: &String) -> String {
+    let mut enum_contents = String::new();
     let re = Regex::new(r"enum\s+(?P<name>\w+)\s*\{(?P<values>[^}]*)\}?").unwrap();
     if let Some(caps) = re.captures(line.as_str()) {
         let name = caps.name("name").map_or("", |m| m.as_str());
         let values = caps.name("values").map_or("", |m| m.as_str());
-        write!(file, "\n\tclass {} {{\n\t\t<<enumerator>>", name).expect("error writing to file");
+        enum_contents.push_str(&format!("\n\tclass {} {{\n\t\t<<enumerator>>", name));
         if values.len() > 0 {
             for item in values.trim().split(',').map(|s| s.replace(",", "")) {
-                write!(file, "\n\t\t{}", item.trim()).expect("error writing to file");
+                enum_contents.push_str(&format!("\n\t\t{}", item.trim()));
             }
         } else {
             for l in contents
@@ -179,15 +186,17 @@ fn parse_enum(line: String, contents: &String, file: &mut File) {
                     .filter(|w| !w.is_empty())
                     .collect();
                 for word in words {
-                    write!(file, "\n\t\t{}", word.trim()).expect("error writing to file");
+                    enum_contents.push_str(&format!("\n\t\t{}", word.trim()));
                 }
             }
         }
     }
-    write!(file, "\n\t}}").expect("error writing to file");
+    enum_contents.push_str("\n\t}");
+    enum_contents
 }
 
-fn parse_attribute(line: String, file: &mut File) {
+fn parse_attribute(line: String) -> String {
+    let mut attribute_contents = String::new();
     let re = Regex::new(r"(?P<visibility>public|private|protected)?\s*(?P<modifiers>static|virtual|abstract|override|async|sealed|extern|unsafe|partial|readonly)?\s*(?P<type>[^\s]+)?\s+(?P<name>[^\s]+)").unwrap();
     if let Some(caps) = re.captures(line.as_str()) {
         let visibility = caps.name("visibility").map_or("", |m| m.as_str());
@@ -195,23 +204,20 @@ fn parse_attribute(line: String, file: &mut File) {
         let _modifiers = caps.name("modifiers").map_or("", |m| m.as_str()).trim();
         let var_type = caps.name("type").map_or("", |m| m.as_str());
         let name = caps.name("name").map_or("", |m| m.as_str());
-        // Handle enums
-        if var_type == "enum" {
-            return;
-        }
         match visibility {
-            "private" => write!(file, "\n\t\t- ").expect("error writing to file"),
-            "protected" => write!(file, "\n\t\t# ").expect("error writing to file"),
-            _ => write!(file, "\n\t\t+ ").expect("error writing to file"),
+            "private" => attribute_contents.push_str("\n\t\t- "),
+            "protected" => attribute_contents.push_str("\n\t\t# "),
+            _ => attribute_contents.push_str("\n\t\t+ "),
         }
-        write!(file, "{}: {}", name, var_type).expect("error writing to file");
+        attribute_contents.push_str(&format!("{}: {}", name, var_type));
     }
     if line.contains("get;") {
-        write!(file, " [get]").expect("error writing to file");
+        attribute_contents.push_str(", ~~get~~");
     }
     if line.contains("set;") {
-        write!(file, " [set]").expect("error writing to file");
+        attribute_contents.push_str(", ~~set~~");
     }
+    attribute_contents
 }
 
 fn is_interface(s: &str) -> bool {
