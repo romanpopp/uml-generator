@@ -11,6 +11,8 @@ fn main() {
         let current_dir = &args[1];
         let umlpath = Path::new(current_dir).join("uml.mmd");
         let mut file_contents = String::new();
+        let mut classes = Vec::new();
+        let mut potential_arrows: Vec<(String, String)> = Vec::new();
         file_contents.push_str("classDiagram\n\tdirection UD");
         for entry in WalkDir::new(current_dir) {
             let entry = entry.unwrap();
@@ -19,7 +21,23 @@ fn main() {
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("cs") {
                 println!("parsing file: {}", path.display());
                 let contents = fs::read_to_string(path).expect("file read error");
-                file_contents.push_str(parse_contents(contents).as_str());
+                file_contents.push_str(
+                    parse_contents(contents, &mut classes, &mut potential_arrows).as_str(),
+                );
+            }
+        }
+        for arrow in potential_arrows {
+            if classes.contains(&arrow.0) {
+                file_contents
+                    .push_str(format!("\n\t{} \"1\" --* \"1\" {}", arrow.0, arrow.1).as_str());
+            } else {
+                if let Some(class) = classes
+                    .iter()
+                    .find(|c| arrow.0.contains(format!("~{}~", c).as_str()))
+                {
+                    file_contents
+                        .push_str(format!("\n\t{} \"1..*\" --o \"1\" {}", class, arrow.1).as_str());
+                }
             }
         }
         let modified_contents = file_contents.replace("~~get~~, ~~set~~", "~~get + set~~");
@@ -32,8 +50,13 @@ fn main() {
     println!("uml.mmd created");
 }
 
-fn parse_contents(contents: String) -> String {
+fn parse_contents(
+    contents: String,
+    classes: &mut Vec<String>,
+    potential_arrows: &mut Vec<(String, String)>,
+) -> String {
     let mut file_contents = String::new();
+    let mut class_name: &String = &String::new();
     let mut need_closing_brace = false;
     for line in contents
         .lines()
@@ -50,7 +73,8 @@ fn parse_contents(contents: String) -> String {
             && !line.contains(";")
         {
             need_closing_brace = true;
-            file_contents.push_str(parse_class(line).as_str());
+            file_contents.push_str(parse_class(line, classes).as_str());
+            class_name = classes.last().expect("yeowza");
         }
         // Method definition
         else if (line.starts_with("public")
@@ -76,7 +100,9 @@ fn parse_contents(contents: String) -> String {
             || line.starts_with("private")
             || line.starts_with("protected")
         {
-            file_contents.push_str(parse_attribute(line).as_str());
+            let data = parse_attribute(line);
+            potential_arrows.push((data.1, class_name.to_string()));
+            file_contents.push_str(data.0.as_str());
         }
         // Getters and setters on different lines
         else if line.starts_with("get") {
@@ -91,7 +117,7 @@ fn parse_contents(contents: String) -> String {
     file_contents
 }
 
-fn parse_class(line: String) -> String {
+fn parse_class(line: String, classes: &mut Vec<String>) -> String {
     let mut class_contents = String::new();
     let re = Regex::new(r"~[^~]*~").unwrap();
     let parts: Vec<String> = line
@@ -109,9 +135,9 @@ fn parse_class(line: String) -> String {
         class_name = definition.last().unwrap();
         for item in base_types {
             if is_interface(item) {
-                class_contents.push_str(&format!("\n\t{} ..* {}", class_name, item));
+                class_contents.push_str(&format!("\n\t{} ..|> {}", class_name, item));
             } else {
-                class_contents.push_str(&format!("\n\t{} --* {}", class_name, item))
+                class_contents.push_str(&format!("\n\t{} --|> {}", class_name, item))
             }
         }
     } else {
@@ -121,6 +147,7 @@ fn parse_class(line: String) -> String {
     if is_interface(class_name) {
         class_contents.push_str("\n\t\t<<interface>>");
     }
+    classes.push(class_name.to_string());
     class_contents
 }
 
@@ -135,9 +162,9 @@ fn parse_method(line: String) -> String {
         let name = caps.name("name").map_or("", |m| m.as_str());
         let params = caps.name("params").map_or("", |m| m.as_str());
         match visibility {
-            "private" => method_contents.push_str("\t\t- "),
-            "protected" => method_contents.push_str("\t\t# "),
-            _ => method_contents.push_str("\t\t+ "),
+            "private" => method_contents.push_str("\n\t\t- "),
+            "protected" => method_contents.push_str("\n\t\t# "),
+            _ => method_contents.push_str("\n\t\t+ "),
         }
         let parts: Vec<&str> = params.split(',').map(|s| s.trim()).collect();
         let formatted_params: Vec<String> = parts
@@ -195,14 +222,15 @@ fn parse_enum(line: String, contents: &String) -> String {
     enum_contents
 }
 
-fn parse_attribute(line: String) -> String {
+fn parse_attribute(line: String) -> (String, String) {
     let mut attribute_contents = String::new();
+    let mut var_type = String::new();
     let re = Regex::new(r"(?P<visibility>public|private|protected)?\s*(?P<modifiers>static|virtual|abstract|override|async|sealed|extern|unsafe|partial|readonly)?\s*(?P<type>[^\s]+)?\s+(?P<name>[^\s]+)").unwrap();
     if let Some(caps) = re.captures(line.as_str()) {
         let visibility = caps.name("visibility").map_or("", |m| m.as_str());
         // modifiers is unused currently
         let _modifiers = caps.name("modifiers").map_or("", |m| m.as_str()).trim();
-        let var_type = caps.name("type").map_or("", |m| m.as_str());
+        var_type = caps.name("type").map_or("", |m| m.as_str()).to_string();
         let name = caps.name("name").map_or("", |m| m.as_str());
         match visibility {
             "private" => attribute_contents.push_str("\n\t\t- "),
@@ -217,7 +245,7 @@ fn parse_attribute(line: String) -> String {
     if line.contains("set;") {
         attribute_contents.push_str(", ~~set~~");
     }
-    attribute_contents
+    (attribute_contents, var_type)
 }
 
 fn is_interface(s: &str) -> bool {
