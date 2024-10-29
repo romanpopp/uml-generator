@@ -18,7 +18,9 @@ fn main() {
             let entry = entry.unwrap();
             let path = entry.path();
 
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("cs") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("cs")
+                || path.extension().and_then(|s| s.to_str()) == Some("xaml")
+            {
                 println!("parsing file: {}", path.display());
                 let contents = fs::read_to_string(path).expect("file read error");
                 file_contents.push_str(
@@ -56,12 +58,15 @@ fn parse_contents(
     potential_arrows: &mut Vec<(String, String)>,
 ) -> String {
     let mut file_contents = String::new();
-    let mut class_name: &String = &String::new();
+    let mut class_name: String = String::new();
+    let mut xaml_class_name: String = String::new();
     let mut need_closing_brace = false;
+
     for line in contents
         .lines()
         .map(str::trim)
         .map(|line| line.replace('<', "~").replace('>', "~"))
+        .map(|line| line.replace(';', ""))
     {
         // Class / interface definition
         if (line.starts_with("public")
@@ -74,7 +79,7 @@ fn parse_contents(
         {
             need_closing_brace = true;
             file_contents.push_str(parse_class(line, classes).as_str());
-            class_name = classes.last().expect("yeowza");
+            class_name = classes.last().expect("yeowza").to_string();
         }
         // Method definition
         else if (line.starts_with("public")
@@ -101,7 +106,7 @@ fn parse_contents(
             || line.starts_with("protected")
         {
             let data = parse_attribute(line);
-            potential_arrows.push((data.1, class_name.to_string()));
+            potential_arrows.push((data.1, class_name.clone()));
             file_contents.push_str(data.0.as_str());
         }
         // Getters and setters on different lines
@@ -109,11 +114,19 @@ fn parse_contents(
             file_contents.push_str(", ~~get~~")
         } else if line.starts_with("set") {
             file_contents.push_str(", ~~set~~")
+        } else if line.contains(" x:Name") {
+            let data = parse_xaml(line, xaml_class_name.clone());
+            potential_arrows.push((data.1, xaml_class_name.clone()));
+            file_contents.push_str(data.0.as_str());
+        } else if line.contains(" x:Class") {
+            xaml_class_name = parse_xaml_class_name(line);
         }
     }
+
     if need_closing_brace {
         file_contents.push_str("\n\t}");
     }
+
     file_contents
 }
 
@@ -249,6 +262,34 @@ fn parse_attribute(line: String) -> (String, String) {
         attribute_contents.push_str(", ~~set~~");
     }
     (attribute_contents, var_type)
+}
+
+fn parse_xaml(line: String, class: String) -> (String, String) {
+    let mut contents = String::new();
+    let pattern = r#"~(?P<type>\w+)\s+x:Name="(?P<name>[^"]+)""#;
+    let re = Regex::new(pattern).unwrap();
+    let mut var_type = String::new();
+    if let Some(caps) = re.captures(line.as_str()) {
+        var_type = caps.name("type").map_or("", |m| m.as_str()).to_string();
+        let name = caps.name("name").map_or("", |m| m.as_str());
+        contents.push_str(&format!("\n\t{}: + {} {}", class, name, var_type));
+    }
+    (contents, var_type)
+}
+
+fn parse_xaml_class_name(line: String) -> String {
+    let pattern = r#"x:Class="(?P<name>[^"]+)""#;
+    let re = Regex::new(pattern).unwrap();
+    if let Some(caps) = re.captures(line.as_str()) {
+        return caps
+            .name("name")
+            .map_or("", |m| m.as_str())
+            .rsplit('.')
+            .next()
+            .unwrap()
+            .to_string();
+    }
+    "".to_string()
 }
 
 fn is_interface(s: &str) -> bool {
