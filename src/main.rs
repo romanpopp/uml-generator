@@ -36,7 +36,7 @@ fn main() {
                     .find(|c| arrow.0.contains(format!("~{}~", c).as_str()))
                 {
                     file_contents
-                        .push_str(format!("\n\t{} \"1..*\" --o \"1\" {}", class, arrow.1).as_str());
+                        .push_str(format!("\n\t{} \"0..*\" --o \"1\" {}", class, arrow.1).as_str());
                 }
             }
         }
@@ -225,11 +225,11 @@ fn parse_enum(line: String, contents: &String) -> String {
 fn parse_attribute(line: String) -> (String, String) {
     let mut attribute_contents = String::new();
     let mut var_type = String::new();
-    let re = Regex::new(r"(?P<visibility>public|private|protected)?\s*(?P<modifiers>static|virtual|abstract|override|async|sealed|extern|unsafe|partial|readonly)?\s*(?P<type>[^\s]+)?\s+(?P<name>[^\s]+)").unwrap();
+    let re = Regex::new(r"(?P<visibility>public|private|protected)?\s*(?P<modifier>static|virtual|abstract|override|async|sealed|extern|unsafe|partial|readonly|event)?\s*(?P<type>[^\s]+)?\s+(?P<name>[^\s]+)").unwrap();
     if let Some(caps) = re.captures(line.as_str()) {
         let visibility = caps.name("visibility").map_or("", |m| m.as_str());
         // modifiers is unused currently
-        let _modifiers = caps.name("modifiers").map_or("", |m| m.as_str()).trim();
+        let modifier = caps.name("modifier").map_or("", |m| m.as_str()).trim();
         var_type = caps.name("type").map_or("", |m| m.as_str()).to_string();
         let name = caps.name("name").map_or("", |m| m.as_str());
         match visibility {
@@ -238,6 +238,9 @@ fn parse_attribute(line: String) -> (String, String) {
             _ => attribute_contents.push_str("\n\t\t+ "),
         }
         attribute_contents.push_str(&format!("{}: {}", name, var_type));
+        if modifier == "event" {
+            attribute_contents.push_str(", ~~event~~");
+        }
     }
     if line.contains("get;") {
         attribute_contents.push_str(", ~~get~~");
