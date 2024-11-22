@@ -118,6 +118,9 @@ fn parse_file(
         .map(str::trim)
         .map(|line| line.replace('<', "~").replace('>', "~"))
     {
+        if line.contains(" operator ") {
+            continue;
+        }
         if line.contains("DataContext =~ ") {
             data_context = line
                 .split_once("DataContext =~ ")
